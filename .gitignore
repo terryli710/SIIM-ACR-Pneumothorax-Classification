@@ -1,0 +1,6 @@
+#ignore everything
+/**
+# but the following
+!/.gitignore
+!/*.ipynb
+!/*.py
