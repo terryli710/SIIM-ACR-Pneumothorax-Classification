@@ -1,6 +1,3 @@
-#ignore everything
-/**
-# but the following
-!/.gitignore
-!/*.ipynb
-!/*.py
+#ignore
+.pipynb_checkpoints/
+.idea/
