@@ -50,6 +50,7 @@ inputs = tf.keras.Input(shape=(204, 204, 3))
 x = base_model(inputs)
 x = tf.keras.layers.Flatten()(x)
 x = tf.keras.layers.Dense(256, activation='relu')(x)
+x = tf.keras.layers.Dense(64, activation='relu')(x)
 outputs = tf.keras.layers.Dense(2, activation='softmax')(x)
 model = keras.Model(inputs, outputs)
 
@@ -57,13 +58,12 @@ model.summary()
 
 
 
-model.compile(optimizer=tf.keras.optimizers.SGD(),loss="binary_crossentropy",metrics=["accuracy"])
+model.compile(optimizer=tf.keras.optimizers.SGD(learning_rate=0.001),loss="binary_crossentropy",metrics=["accuracy"])
 
 
 model.fit(x_train, y_train, batch_size=16, epochs=5)
 
 
 pred = model.predict(x_train)
-
 score = model.evaluate(x_test, y_test, verbose=0)
 print(score[0],score[1])
