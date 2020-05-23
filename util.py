@@ -8,10 +8,15 @@ import pydicom
 from tqdm import tqdm
 from skimage.transform import resize
 import matplotlib.pyplot as plt
+from cv2 import normalize
 
 # Image related
 def makeRgb(grey_img):
     return np.stack((grey_img,) * 3, axis=-1)
+
+def rescaleImg(imgs):
+    new_imgs = ((imgs - imgs.min()) * (255 / (imgs.max() - imgs.min()))).astype('int')
+    return new_imgs
 
 # Data related
 def getXY(metadata_df, verbose=False):
@@ -25,25 +30,36 @@ def getXY(metadata_df, verbose=False):
         else:
             return 1
 
-    im_width, im_height, im_ch = 256, 256, 3
+    im_width, im_height, im_ch = 224, 224, 3
     X = np.zeros((len(metadata_df), im_width, im_height , im_ch), dtype='int8')
     Y = np.zeros(len(metadata_df))
 
-    for index, row in tqdm(metadata_df.iterrows()):
+    for index in tqdm(range(metadata_df.shape[0])):
+        row = metadata_df.iloc[index]
         dataset = pydicom.dcmread(row['file_path'])
         grey_img = dataset.pixel_array
-        reized_img = resize(grey_img, output_shape=(256, 256))
-        stacked_img = makeRgb(reized_img)
+        resized_img = resize(grey_img, output_shape=(im_width, im_height))
+        stacked_img = makeRgb(resized_img)
         X[index,:,:,:] = stacked_img
         Y[index] = getLabel(row, verbose)
 
+    # Rescale img
+    X = rescaleImg(X)
     assert X.shape[0] == Y.shape[0], "Length differ."
     if verbose:
         print('{} images extracted of shape {}'.format(Y.shape[0], X.shape[1:]))
         print('Found {} positive cases and {} negative cases'.format(np.sum(Y==1), np.sum(Y==0)))
     return X, Y
 
-
+class flattenimg():
+    def __init__(self, size):
+        self.size = size
+    def flatten(self, img):
+        flattened = img.reshape((img.shape[0], np.prod(img.shape[1:])))
+        return flattened
+    def reconstruct(self, flatten):
+        img = flatten.reshape(tuple([flatten.shape[0]] + list(self.size)))
+        return img
 
 
 def dicom2dict(dicom_data, file_path, rles_df, encoded_pixels=True):
@@ -88,6 +104,7 @@ def dicom2dict(dicom_data, file_path, rles_df, encoded_pixels=True):
 
 def dicom2df(file_path_list, rle_df):
     metadata_list = []
+    print('Constructing DataFrame...')
     for file_path in tqdm(file_path_list):
         dicom_data = pydicom.dcmread(file_path)
         train_metadata = dicom2dict(dicom_data, file_path, rle_df)
@@ -116,3 +133,14 @@ def visualize_img(metadata_df, index=False, num_img=3):
                                size=26, color='white', backgroundcolor='black')
         subplot_count += 1
 
+# Plot loss value
+def lossCurve(history):
+    t_loss = history.history['loss']
+    v_loss = history.history['val_loss']
+    epochs = range(1, len(t_loss) + 1)
+    plt.plot(t_loss, label='Training Loss')
+    plt.plot(v_loss, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.show()
