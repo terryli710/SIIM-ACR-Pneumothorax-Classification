@@ -7,31 +7,46 @@ import numpy as np
 import pydicom
 from tqdm import tqdm
 from skimage.transform import resize
+from sklearn.preprocessing import minmax_scale
 import matplotlib.pyplot as plt
-from cv2 import normalize
+import json
+from keras.utils.data_utils import Sequence
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.keras import balanced_batch_generator
 
 # Image related
 def makeRgb(grey_img):
     return np.stack((grey_img,) * 3, axis=-1)
 
 def rescaleImg(imgs):
-    new_imgs = ((imgs - imgs.min()) * (255 / (imgs.max() - imgs.min()))).astype('int')
+    new_imgs = ((imgs - imgs.min()) * (255 / (imgs.max() - imgs.min()))).astype(int)
     return new_imgs
 
 # Data related
+def getOutdir(name, label, pos_dir, neg_dir):
+    if label == 0: return os.path.join(neg_dir, name)
+    elif label == 1: return os.path.join(pos_dir, name)
+
+def getLabel(row, verbose=False):
+    l = row['encoded_pixels_list']
+    if len(l) == 1 and l[0] == '-1':
+        return 0
+    else:
+        return 1
+
+def getLabelv2(row, verbose=False):
+    l = row['encoded_pixels_list']
+    # if label is empty, return None
+    if len(l) == 0: return None
+    if len(l) == 1 and l[0] == '-1': return 0
+    else: return 1
+
 def getXY(metadata_df, verbose=False):
     """
     From metadata to trainable X and Y
     """
-    def getLabel(row, verbose=False):
-        l = row['encoded_pixels_list']
-        if len(l) == 1 and l[0] == '-1':
-            return 0
-        else:
-            return 1
-
     im_width, im_height, im_ch = 224, 224, 3
-    X = np.zeros((len(metadata_df), im_width, im_height , im_ch), dtype='int8')
+    X = np.zeros((len(metadata_df), im_width, im_height , im_ch), dtype='int16')
     Y = np.zeros(len(metadata_df))
 
     for index in tqdm(range(metadata_df.shape[0])):
@@ -39,12 +54,11 @@ def getXY(metadata_df, verbose=False):
         dataset = pydicom.dcmread(row['file_path'])
         grey_img = dataset.pixel_array
         resized_img = resize(grey_img, output_shape=(im_width, im_height))
-        stacked_img = makeRgb(resized_img)
+        stacked_img = rescaleImg(makeRgb(resized_img))
         X[index,:,:,:] = stacked_img
         Y[index] = getLabel(row, verbose)
 
-    # Rescale img
-    X = rescaleImg(X)
+    # X = rescaleImg(X)
     assert X.shape[0] == Y.shape[0], "Length differ."
     if verbose:
         print('{} images extracted of shape {}'.format(Y.shape[0], X.shape[1:]))
@@ -112,6 +126,25 @@ def dicom2df(file_path_list, rle_df):
     metadata_df = pd.DataFrame(metadata_list)
     return metadata_df
 
+# balanced sampler by oversampling the minority class
+class BalancedDataGenerator(Sequence):
+    """ImageDataGenerator + RandomOversampling"""
+    def __init__(self, x, y, datagen, batch_size=32):
+        self.datagen = datagen
+        self.batch_size = batch_size
+        self._shape = x.shape
+        datagen.fit(x)
+        self.gen, self.steps_per_epoch = balanced_batch_generator(x.reshape(x.shape[0], -1), y, sampler=RandomOverSampler(), batch_size=self.batch_size, keep_sparse=True)
+
+    def __len__(self):
+        return self._shape[0] // self.batch_size
+
+    def __getitem__(self, idx):
+        x_batch, y_batch = self.gen.__next__()
+        x_batch = x_batch.reshape(-1, *self._shape[1:])
+        return self.datagen.flow(x_batch, y_batch, batch_size=self.batch_size).next()
+
+
 
 # Visualization related
 def visualize_img(metadata_df, index=False, num_img=3):
@@ -133,6 +166,15 @@ def visualize_img(metadata_df, index=False, num_img=3):
                                size=26, color='white', backgroundcolor='black')
         subplot_count += 1
 
+# display 9 augmented images
+def visualize_augmented(traingen):
+    for x_batch, y_batch in traingen:
+        for i in range(0,9):
+            plt.subplot(330 + 1 + i)
+            plt.imshow(minmax_scale(x_batch[i,:,:,0]), cmap=plt.get_cmap('gray'))
+        plt.show()
+        break
+
 # Plot loss value
 def lossCurve(history):
     t_loss = history.history['loss']
@@ -144,3 +186,62 @@ def lossCurve(history):
     plt.ylabel('Loss')
     plt.legend()
     plt.show()
+
+# Plot histogram of X
+def histX(X):
+    plt.hist(np.mean(X, axis = tuple(range(1, X.ndim))))
+    plt.show()
+
+def saveModelResults(history, result_dict, name):
+    # Set
+    log_dir = os.path.join(os.getcwd(), 'model_log')
+    file_dir = os.path.join(log_dir, name + '.json')
+    with open(file_dir, 'wb') as file:
+        json.dump(result_dict, file)
+    print('Saved to ', file_dir)
+    return
+
+#%%
+def storex(metadata_df, directory, img_size=(224,224,3), verbose=False):
+    #create directory
+    cur_dir = os.path.abspath('')
+    file_dir = os.path.join(cur_dir, directory)
+    #create two classes
+    pos_dir = os.path.join(file_dir, 'pos')
+    neg_dir = os.path.join(file_dir, 'neg')
+    newdirs = [cur_dir,pos_dir,neg_dir]
+    for dir in newdirs:
+        if not os.path.exists(dir): os.makedirs(dir)
+    #img size
+    ch=1
+    if len(img_size)==2: width, height = img_size
+    elif len(img_size)==3: width, height, ch = img_size
+    # several values
+    npos, nneg = 0, 0
+    for index in tqdm(range(metadata_df.shape[0])):
+        row = metadata_df.iloc[index]
+        label = getLabelv2(row)
+        if label == 0: nneg += 1
+        elif label == 1: npos += 1
+        if label is not None:
+            out_dir = getOutdir(str(index)+'.png', label, pos_dir, neg_dir)
+            dataset = pydicom.dcmread(row['file_path'])
+            grey_img = dataset.pixel_array
+            resized_img = resize(grey_img, output_shape=(width, height))
+            if ch == 3: resized_img = makeRgb(resized_img)
+            plt.imsave(out_dir, resized_img)
+        elif verbose: print('Index {} has no label'.format(index))
+    if verbose: print('Store {} pos and {} neg to directory {}'.format(npos, nneg, file_dir))
+    return
+
+
+if __name__ == '__main__':
+    '''    
+    # for debug purpose
+    from glob import glob
+    rle_df = pd.read_csv('train-rle.csv')
+    rle_df.columns = ['ImageId', 'EncodedPixels']
+    train_file_list = sorted(glob('dicom-images-train/*/*/*.dcm'))
+    metadata_df = dicom2df(train_file_list, rle_df)
+    getXY(metadata_df[5000:5500], verbose=True)
+    '''
