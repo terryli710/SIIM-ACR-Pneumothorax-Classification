@@ -11,6 +11,7 @@ from sklearn.preprocessing import minmax_scale
 import matplotlib.pyplot as plt
 import json
 from keras.utils.data_utils import Sequence
+from tensorflow.keras.models import model_from_json
 from imblearn.over_sampling import RandomOverSampler
 from imblearn.keras import balanced_batch_generator
 
@@ -192,6 +193,10 @@ def histX(X):
     plt.hist(np.mean(X, axis = tuple(range(1, X.ndim))))
     plt.show()
 
+
+#%%
+# Storage related
+
 def saveModelResults(history, result_dict, name):
     # Set
     log_dir = os.path.join(os.getcwd(), 'model_log')
@@ -201,7 +206,6 @@ def saveModelResults(history, result_dict, name):
     print('Saved to ', file_dir)
     return
 
-#%%
 def storex(metadata_df, directory, img_size=(224,224,3), verbose=False):
     #create directory
     cur_dir = os.path.abspath('')
@@ -233,6 +237,27 @@ def storex(metadata_df, directory, img_size=(224,224,3), verbose=False):
         elif verbose: print('Index {} has no label'.format(index))
     if verbose: print('Store {} pos and {} neg to directory {}'.format(npos, nneg, file_dir))
     return
+
+# save models
+def saveTrainedModel(model, name):
+    # serialize model to JSON
+    model_json = model.to_json()
+    with open(name + ".json", "w") as json_file:
+        json_file.write(model_json)
+    # serialize weights to HDF5
+    model.save_weights(name + ".h5")
+    print("Saved model to disk")
+
+#load model
+def loadTrainedModel(name):
+    # load json and create model
+    json_file = open(name + ".json", 'r')
+    loaded_model_json = json_file.read()
+    json_file.close()
+    loaded_model = model_from_json(loaded_model_json)
+    # load weights into new model
+    loaded_model.load_weights(name + ".h5")
+    print("Loaded model from disk")
 
 
 if __name__ == '__main__':

@@ -1,39 +1,51 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from imblearn.under_sampling import RandomUnderSampler
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import OneHotEncoder
 from sklearn.metrics import confusion_matrix
-from tensorflow.keras.applications import VGG16, InceptionV3
+from tensorflow.keras.applications.densenet import DenseNet121
 from util import getXY, dicom2df, flattenimg, lossCurve
-from tensorflow.keras.applications.inception_v3 import preprocess_input
+from sklearn.metrics import confusion_matrix, accuracy_score, roc_auc_score
+from tensorflow.keras.applications.densenet import preprocess_input
+from collections import Counter
+
+#%%
+# Load test data
+x_test = np.load('x_test.npy')
+y_test = np.load("y_test.npy")
 
 #%%
 # load data
-X = np.load('X.npy')
-Y = np.load('Y.npy')
-#%%
-# Split data
-x_train, x_test, y_train, y_test = train_test_split(X, Y, stratify=Y, test_size=0.1, random_state=9001)
-#%%
-# Preprocess input
-X_processed = preprocess_input(x_train)
-x_test_processed = preprocess_input(x_test)
-#balanced dataset
-index = np.arange(0, x_train.shape[0], 1)
-rus = RandomUnderSampler(random_state=9001)
-i_rus, y_rus = rus.fit_resample(np.expand_dims(index, axis=-1), y_train)
-x_rus = x_train[i_rus[:,0]]
-print('Balanced data set: positive cases {}; negative cases {}'.format(np.sum(y_rus==1), np.sum(y_rus==0)))
-#%%
-# Y encoding
-y_train = OneHotEncoder().fit_transform(y_rus.reshape(-1,1)).toarray()
-y_test = OneHotEncoder().fit_transform(y_test.reshape(-1,1)).toarray()
+datagen = tf.keras.preprocessing.image.ImageDataGenerator(preprocessing_function=preprocess_input,
+                                                          rotation_range=20,
+                                                          width_shift_range=0.1,
+                                                          height_shift_range=0.1,
+                                                          horizontal_flip=True,
+                                                          shear_range=0.1,
+                                                          zoom_range=0.1,
+                                                          brightness_range=(0.9, 1.1))
 
+train_gen = datagen.flow_from_directory(directory='data\\train',
+                                        target_size=(224,224),
+                                        color_mode='rgb',
+                                        batch_size=32,
+                                        class_mode='categorical',
+                                        shuffle=True,
+                                        seed=9001)
+
+val_gen = datagen.flow_from_directory(directory='data\\val',
+                                        target_size=(224,224),
+                                        color_mode='rgb',
+                                        batch_size=32,
+                                        class_mode='categorical',
+                                        shuffle=True,
+                                        seed=9001)
+
+STEP_SIZE_TRAIN=train_gen.n//train_gen.batch_size
+STEP_SIZE_VALID=val_gen.n//train_gen.batch_size
 #%%
+# model def
 kr = tf.keras.regularizers.l1_l2(0.01, 0.01)
-base_model = InceptionV3(include_top=False, weights="imagenet", input_shape=(224, 224,3))
+base_model = DenseNet121(include_top=False, weights='imagenet', input_shape=(224, 224, 3))
 base_model.trainable = False
 inputs = tf.keras.Input(shape=(224, 224, 3))
 x = base_model(inputs)
@@ -41,21 +53,32 @@ x = tf.keras.layers.Flatten()(x)
 x = tf.keras.layers.Dropout(0.2)(x)
 x = tf.keras.layers.Dense(1024, activation='relu', kernel_regularizer=kr)(x)
 x = tf.keras.layers.Dropout(0.2)(x)
-x = tf.keras.layers.Dense(256, activation='relu', kernel_regularizer=kr)(x)
+x = tf.keras.layers.Dense(128, activation='relu', kernel_regularizer=kr)(x)
 outputs = tf.keras.layers.Dense(2, activation='softmax')(x)
 model = tf.keras.Model(inputs, outputs)
 #%%
 for l in model.layers: print(l.name, l.trainable)
 model.summary()
 #%%
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.01),loss='categorical_crossentropy', metrics=["accuracy", "AUC"])
+model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0001),loss='categorical_crossentropy', metrics=["accuracy", "AUC"])
 #%%
-history = model.fit(x_rus, y_train, batch_size=32, epochs=10, shuffle=True, validation_split=0.1)
+counter = Counter(train_gen.classes)
+max_val = float(max(counter.values()))
+class_weights = {class_id : max_val/num_images for class_id, num_images in counter.items()}
+history = model.fit_generator(generator=train_gen,
+                              class_weight=class_weights,
+                              steps_per_epoch=STEP_SIZE_TRAIN,
+                              epochs=30,
+                              verbose=True,
+                              validation_data=val_gen,
+                              validation_steps=STEP_SIZE_VALID,
+                              validation_freq=1)
 #%%
 lossCurve(history)
 y_pred = model.predict(x_test)
-score = model.evaluate(x_test, y_test, verbose=0)
-print(score)
-cm = confusion_matrix(y_test[:,0]==1, y_pred[:,0]>0.5)
+acc = accuracy_score(y_test==1, y_pred[:,1]>0.5)
+auroc = roc_auc_score(y_test==1, y_pred[:,1]>0.5)
+cm = confusion_matrix(y_test==1, y_pred[:,1]>0.5)
+print(acc, auroc)
 print(cm)
 
